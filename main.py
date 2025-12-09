@@ -7,11 +7,9 @@ from email.message import EmailMessage
 TESLA_ENDPOINT = "https://www.tesla.com/inventory/api/v4/inventory-results"
 
 # Config from Env
-SMTP_HOST = os.environ.get("SMTP_HOST")
-SMTP_PORT = os.environ.get("SMTP_PORT", 587)
-SMTP_USER = os.environ.get("SMTP_USER")
-SMTP_PASS = os.environ.get("SMTP_PASS")
-MAIL_FROM = os.environ.get("MAIL_FROM")
+MAILERSEND_API_TOKEN = os.environ.get("MAILERSEND_API_TOKEN")
+MAILERSEND_DOMAIN = os.environ.get("MAILERSEND_DOMAIN") # e.g. test-ywj2lpnx9ejg7oqz.mlsender.net
+MAIL_FROM = os.environ.get("MAIL_FROM") # Verified sender email or from the domain
 MAIL_TO = os.environ.get("MAIL_TO")
 
 # Thresholds
@@ -132,28 +130,56 @@ def send_notification(deals):
         
     print(f"Found {len(deals)} MATCHING deals!")
         
-    if not all([SMTP_HOST, SMTP_USER, SMTP_PASS, MAIL_FROM, MAIL_TO]):
-        print("Missing SMTP config, skipping email.")
+    if not MAILERSEND_API_TOKEN or not MAIL_TO:
+        print("Missing MailerSend config (MAILERSEND_API_TOKEN, MAIL_TO), skipping email.")
         return
 
-    msg = EmailMessage()
-    msg["Subject"] = f"Tesla Alert: {len(deals)} Lease Deal(s) Found!"
-    msg["From"] = MAIL_FROM
-    msg["To"] = MAIL_TO
-
-    body = "Found the following Model 3 Lease deals:\n\n"
-    for d in deals:
-        body += f"Year: {d['year']}, Lease: ${d['lease_payment']}/mo, Link: {d['link']}\n"
+    # Prepare email content
+    subject = f"Tesla Alert: {len(deals)} Lease Deal(s) Found!"
     
-    msg.set_content(body)
+    html_body = "<h1>Found the following Model 3 Lease deals:</h1><ul>"
+    text_body = "Found the following Model 3 Lease deals:\n\n"
+    
+    for d in deals:
+        line = f"Year: {d['year']}, Lease: ${d['lease_payment']}/mo"
+        text_body += f"{line}, Link: {d['link']}\n"
+        html_body += f"<li>{line} <a href='{d['link']}'>Link</a></li>"
+    html_body += "</ul>"
+
+    # MailerSend API
+    url = "https://api.mailersend.com/v1/email"
+    headers = {
+        "Authorization": f"Bearer {MAILERSEND_API_TOKEN}",
+        "Content-Type": "application/json",
+        "X-Requested-With": "XMLHttpRequest"
+    }
+    
+    # "From" must match your verified domain/sender in MailerSend
+    sender_email = MAIL_FROM or f"notifier@{MAILERSEND_DOMAIN}"
+    
+    payload = {
+        "from": {
+            "email": sender_email,
+            "name": "Tesla Watcher"
+        },
+        "to": [
+            {
+                "email": MAIL_TO,
+                "name": "User"
+            }
+        ],
+        "subject": subject,
+        "text": text_body,
+        "html": html_body
+    }
 
     try:
-        print("Sending email...")
-        with smtplib.SMTP(SMTP_HOST, int(SMTP_PORT)) as server:
-            server.starttls()
-            server.login(SMTP_USER, SMTP_PASS)
-            server.send_message(msg)
-        print("Email sent!")
+        print("Sending mail via MailerSend API...")
+        r = requests.post(url, headers=headers, json=payload, timeout=10)
+        if r.status_code in [200, 202]:
+            print("Email sent successfully!")
+        else:
+            print(f"Failed to send email. Status: {r.status_code}, Response: {r.text}")
     except Exception as e:
         print(f"Failed to send email: {e}")
 
